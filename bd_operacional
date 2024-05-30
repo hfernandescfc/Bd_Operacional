@@ -27,6 +27,11 @@ def init_db():
             transaction_id INTEGER PRIMARY KEY
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS abort_log (
+            transaction_id INTEGER PRIMARY KEY
+        )
+    ''')
     conn.commit()
     return conn
 
@@ -117,6 +122,9 @@ class TransactionManager:
         transaction_id = self.current_transaction
         self.current_transaction = None
         self.clear_log(transaction_id)  # clear log entries for this transaction
+        cursor = self.conn.cursor()
+        cursor.execute('INSERT INTO abort_log (transaction_id) VALUES (?)', (transaction_id,))
+        self.conn.commit()
 
     def recover(self):
         cursor = self.conn.cursor()
@@ -133,67 +141,86 @@ class DBApp:
     def __init__(self, root, transaction_manager):
         self.root = root
         self.tm = transaction_manager
-        self.transaction_id = 1
-        self.cache_text = tk.Text(root, height=10, width=40)
-        self.cache_text.pack()
 
-        self.root.title("DB Transaction Manager")
+        # Top-left corner: Transaction ID, Key, and Value
+        self.top_frame = tk.Frame(root)
+        self.top_frame.pack(side=tk.TOP, fill=tk.X)
+        self.trans_label = tk.Label(self.top_frame, text="Transaction ID:")
+        self.trans_label.pack(side=tk.LEFT)
+        self.trans_combobox = ttk.Combobox(self.top_frame, values=self.get_transaction_ids())
+        self.trans_combobox.pack(side=tk.LEFT)
+        self.key_label = tk.Label(self.top_frame, text="Key:")
+        self.key_label.pack(side=tk.LEFT)
+        self.key_entry = tk.Entry(self.top_frame)
+        self.key_entry.pack(side=tk.LEFT)
+        self.value_label = tk.Label(self.top_frame, text="Value:")
+        self.value_label.pack(side=tk.LEFT)
+        self.value_entry = tk.Entry(self.top_frame)
+        self.value_entry.pack(side=tk.LEFT)
 
-        # Transaction ID
-        self.trans_label = tk.Label(root, text="Transaction ID:")
-        self.trans_label.pack()
-        self.trans_entry = tk.Entry(root)
-        self.trans_entry.pack()
-        self.trans_entry.insert(0, str(self.transaction_id))
+        # Operation buttons
+        self.button_frame = tk.Frame(root)
+        self.button_frame.pack(side=tk.TOP, fill=tk.X)
+        self.start_button = tk.Button(self.button_frame, text="Start Transaction", command=self.start_transaction, bg='#4CAF50', fg='black', font=('bold', 10))
+        self.start_button.pack(side=tk.LEFT)
+        self.read_button = tk.Button(self.button_frame, text="Read", command=self.read, bg='#F7DC6F', fg='black', font=('bold', 10))
+        self.read_button.pack(side=tk.LEFT)
+        self.write_button = tk.Button(self.button_frame, text="Write", command=self.write, bg='#F7DC6F', fg='black', font=('bold', 10))
+        self.write_button.pack(side=tk.LEFT)
+        self.commit_button = tk.Button(self.button_frame, text="Commit", command=self.commit, bg='#F7DC6F', fg='black', font=('bold', 10))
+        self.commit_button.pack(side=tk.LEFT)
+        self.abort_button = tk.Button(self.button_frame, text="Abort", command=self.abort, bg='#F44336', fg='black', font=('bold', 10))
+        self.abort_button.pack(side=tk.LEFT)
+        self.recover_button = tk.Button(self.button_frame, text="Recover", command=self.recover, bg='#2196F3', fg='black', font=('bold', 10))
+        self.recover_button.pack(side=tk.LEFT)
+        self.checkpoint_button = tk.Button(self.button_frame, text="Checkpoint", command=self.checkpoint, bg='#FF9800', fg='black', font=('bold', 10))
+        self.checkpoint_button.pack(side=tk.LEFT)
 
-        # Key and Value
-        self.key_label = tk.Label(root, text="Key:")
-        self.key_label.pack()
-        self.key_entry = tk.Entry(root)
-        self.key_entry.pack()
+        # Center: Current Cache and Abort Log
+        self.center_frame = tk.Frame(root)
+        self.center_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.cache_frame = tk.LabelFrame(self.center_frame, text="Current Cache")
+        self.cache_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.cache_text = tk.Text(self.cache_frame, height=10, width=40)
+        self.cache_text.pack(fill=tk.BOTH, expand=True)
+        self.abort_log_frame = tk.LabelFrame(self.center_frame, text="Abort Log")
+        self.abort_log_frame.pack(side=tk.LEFT, fill=tk.Y)
+        self.abort_log_tree = ttk.Treeview(self.abort_log_frame, columns=("transaction_id",), show='headings')
+        self.abort_log_tree.heading("transaction_id", text="Transaction ID")
+        self.abort_log_tree.pack(fill=tk.Y)
 
-        self.value_label = tk.Label(root, text="Value:")
-        self.value_label.pack()
-        self.value_entry = tk.Entry(root)
-        self.value_entry.pack()
-
-        # Transaction Control
-        self.start_button = tk.Button(root, text="Start Transaction", command=self.start_transaction)
-        self.start_button.pack()
-        self.read_button = tk.Button(root, text="Read", command=self.read)
-        self.read_button.pack()
-        self.write_button = tk.Button(root, text="Write", command=self.write)
-        self.write_button.pack()
-        self.commit_button = tk.Button(root, text="Commit", command=self.commit)
-        self.commit_button.pack()
-        self.abort_button = tk.Button(root, text="Abort", command=self.abort)
-        self.abort_button.pack()
-        self.recover_button = tk.Button(root, text="Recover", command=self.recover)
-        self.recover_button.pack()
-        self.checkpoint_button = tk.Button(root, text="Checkpoint", command=self.checkpoint)
-        self.checkpoint_button.pack()
-
-        # Log Display
+        # Right: Log and Commit Log
         self.log_frame = tk.LabelFrame(root, text="Logs")
-        self.log_frame.pack(fill="both", expand="yes")
-
+        self.log_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.log_tree = ttk.Treeview(self.log_frame, columns=("transaction_id", "operation", "key", "value"), show='headings')
         self.log_tree.heading("transaction_id", text="Transaction ID")
         self.log_tree.heading("operation", text="Operation")
         self.log_tree.heading("key", text="Key")
         self.log_tree.heading("value", text="Value")
-        self.log_tree.pack(fill="both", expand=True)
-
+        self.log_tree.pack(fill=tk.BOTH, expand=True)
         self.commit_log_frame = tk.LabelFrame(root, text="Commit Log")
-        self.commit_log_frame.pack(fill="both", expand="yes")
-
+        self.commit_log_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.commit_log_tree = ttk.Treeview(self.commit_log_frame, columns=("transaction_id",), show='headings')
         self.commit_log_tree.heading("transaction_id", text="Transaction ID")
-        self.commit_log_tree.pack(fill="both", expand=True)
+        self.commit_log_tree.pack(fill=tk.BOTH, expand=True)
 
-
+        self.update_abort_log()
         self.update_logs()
+                
 
+    def get_transaction_ids(self):
+        cursor = self.tm.conn.cursor()
+        cursor.execute('''
+            SELECT MAX(transaction_id) FROM commit_log
+        ''')
+        last_committed_id = cursor.fetchone()[0]
+        if last_committed_id is None:
+            last_committed_id = 0
+        cursor.execute('''
+            SELECT transaction_id FROM abort_log
+        ''')
+        aborted_ids = [row[0] for row in cursor.fetchall()]
+        return [i for i in range(last_committed_id + 1, last_committed_id + 6) if i not in aborted_ids]
 
     def update_cache_display(self):
             self.cache_text.delete(1.0, tk.END)  # clear the text widget
@@ -201,12 +228,16 @@ class DBApp:
             for key, value in cache.items():
                 self.cache_text.insert(tk.END, f"{key}: {value}\n")
 
+    def update_transaction_ids(self):
+        self.trans_combobox['values'] = self.get_transaction_ids()
+
 
     def start_transaction(self):
-        self.transaction_id = int(self.trans_entry.get())
+        self.transaction_id = int(self.trans_combobox.get())
         self.tm.start_transaction(self.transaction_id)
         self.update_cache_display()
         messagebox.showinfo("Transaction", f"Transaction {self.transaction_id} started")
+        self.update_transaction_ids()
 
     def read(self):
         key = self.key_entry.get()
@@ -258,6 +289,13 @@ class DBApp:
         for log in commit_logs:
             self.commit_log_tree.insert("", "end", values=log)
 
+    def update_abort_log(self):
+        for item in self.abort_log_tree.get_children():
+            self.abort_log_tree.delete(item)
+        cursor = self.tm.conn.cursor()
+        cursor.execute('SELECT * FROM abort_log')
+        for row in cursor.fetchall():
+            self.abort_log_tree.insert("", "end", values=row)
 
 def main():
     conn = init_db()
