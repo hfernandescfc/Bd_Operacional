@@ -81,10 +81,7 @@ class TransactionManager:
 
     def clear_log(self, transaction_id):
         cursor = self.conn.cursor()
-        if transaction_id is None:
-            cursor.execute('DELETE FROM log')  # clear the entire log
-        else:
-            cursor.execute('DELETE FROM log WHERE transaction_id =?', (transaction_id,))
+        cursor.execute('DELETE FROM log WHERE transaction_id =?', (transaction_id,))
         self.conn.commit()
 
     def start_transaction(self, transaction_id):
@@ -111,8 +108,9 @@ class TransactionManager:
             set_value(self.conn, key, value)
         log_commit(self.conn, self.current_transaction)
         self.cache = {}
+        transaction_id = self.current_transaction
         self.current_transaction = None
-        self.clear_log(self.current_transaction)  # clear the log
+        self.clear_log(transaction_id)  # clear log entries for this transaction
 
     def abort(self):
         self.cache = {}
@@ -128,6 +126,7 @@ class TransactionManager:
         for transaction_id, operation, key, value in cursor.fetchall():
             if transaction_id in committed_transactions and operation == 'write':
                 set_value(self.conn, key, value)
+        self.clear_log(None)  # clear the log after recovery
 
 
 class DBApp:
@@ -192,17 +191,17 @@ class DBApp:
         self.commit_log_tree.heading("transaction_id", text="Transaction ID")
         self.commit_log_tree.pack(fill="both", expand=True)
 
-        
+
         self.update_logs()
 
-    
+
     def update_cache_display(self):
             self.cache_text.delete(1.0, tk.END)  # clear the text widget
             cache = self.tm.cache
             for key, value in cache.items():
                 self.cache_text.insert(tk.END, f"{key}: {value}\n")
-    
-    
+
+
     def start_transaction(self):
         self.transaction_id = int(self.trans_entry.get())
         self.tm.start_transaction(self.transaction_id)
