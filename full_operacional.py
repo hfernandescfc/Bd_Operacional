@@ -1,6 +1,16 @@
+# Camada de persistência
+
 import sqlite3
-import tkinter as tk
-from tkinter import messagebox, ttk
+
+def reset_db():
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute('DROP TABLE IF EXISTS data')
+    cursor.execute('DROP TABLE IF EXISTS log')
+    cursor.execute('DROP TABLE IF EXISTS commit_log')
+    conn.commit()
+    conn.close()
+
 
 def init_db():
     conn = sqlite3.connect('database.db')
@@ -20,13 +30,26 @@ def init_db():
             PRIMARY KEY(transaction_id, operation, key)
         )
     ''')
+    
+    # Create or alter commit_log table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS commit_log (
-            transaction_id INTEGER PRIMARY KEY
+            transaction_id INTEGER,
+            key TEXT,
+            value INTEGER,
+            PRIMARY KEY(transaction_id, key)
         )
     ''')
-    conn.commit()
-    return conn
+
+    # Check if 'key' and 'value' columns exist in 'commit_log' table
+    cursor.execute("PRAGMA table_info(commit_log)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if 'key' not in columns:
+        cursor.execute('ALTER TABLE commit_log ADD COLUMN key TEXT')
+    if 'value' not in columns:
+        cursor.execute('ALTER TABLE commit_log ADD COLUMN value INTEGER')   
+
+
 
 def get_value(conn, key):
     cursor = conn.cursor()
@@ -44,9 +67,9 @@ def log_operation(conn, transaction_id, operation, key, value):
     cursor.execute('INSERT INTO log (transaction_id, operation, key, value) VALUES (?, ?, ?, ?)', (transaction_id, operation, key, value))
     conn.commit()
 
-def log_commit(conn, transaction_id):
+def log_commit(conn, transaction_id, key, value):
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO commit_log (transaction_id) VALUES (?)', (transaction_id,))
+    cursor.execute('INSERT INTO commit_log (transaction_id, key, value) VALUES (?, ?, ?)', (transaction_id, key, value))
     conn.commit()
 
 def get_log(conn):
@@ -60,16 +83,6 @@ def get_commit_log(conn):
     return cursor.fetchall()
 
 
-def populate_initial_data(conn):
-    initial_data = {
-        "A": 100,
-        "B": 200, 
-        "C": 300
-    }
-    cursor = conn.cursor()
-    for key, value in initial_data.items():
-        cursor.execute('REPLACE INTO data (key, value) VALUES (?, ?)', (key, value))
-    conn.commit()
 
 class TransactionManager:
     def __init__(self, conn):
@@ -96,7 +109,7 @@ class TransactionManager:
     def commit(self):
         for key, value in self.cache.items():
             set_value(self.conn, key, value)
-        log_commit(self.conn, self.current_transaction)
+            log_commit(self.conn, self.current_transaction, key, value)
         self.cache = {}
         self.current_transaction = None
 
@@ -113,6 +126,10 @@ class TransactionManager:
             if transaction_id in committed_transactions and operation == 'write':
                 set_value(self.conn, key, value)
 
+#Interface do usuário
+
+import tkinter as tk
+from tkinter import messagebox, ttk
 
 class DBApp:
     def __init__(self, root, transaction_manager):
@@ -155,6 +172,8 @@ class DBApp:
         self.recover_button.pack()
         self.checkpoint_button = tk.Button(root, text="Checkpoint", command=self.checkpoint)
         self.checkpoint_button.pack()
+        self.fail_button = tk.Button(root, text="Simulate Failure", command=self.simulate_failure)
+        self.fail_button.pack()
 
         # Log Display
         self.log_frame = tk.LabelFrame(root, text="Logs")
@@ -170,8 +189,10 @@ class DBApp:
         self.commit_log_frame = tk.LabelFrame(root, text="Commit Log")
         self.commit_log_frame.pack(fill="both", expand="yes")
 
-        self.commit_log_tree = ttk.Treeview(self.commit_log_frame, columns=("transaction_id",), show='headings')
+        self.commit_log_tree = ttk.Treeview(self.commit_log_frame, columns=("transaction_id", "key", "value"), show='headings')
         self.commit_log_tree.heading("transaction_id", text="Transaction ID")
+        self.commit_log_tree.heading("key", text="Key")
+        self.commit_log_tree.heading("value", text="Value")
         self.commit_log_tree.pack(fill="both", expand=True)
 
         self.update_logs()
@@ -216,6 +237,11 @@ class DBApp:
         # For simplicity, checkpoint functionality is not implemented
         # You can add checkpoint logic if needed
 
+    def simulate_failure(self):
+        messagebox.showinfo("Simulate Failure", "Simulated failure occurred")
+        self.tm.abort()
+        self.update_logs()
+
     def update_logs(self):
         for item in self.log_tree.get_children():
             self.log_tree.delete(item)
@@ -228,7 +254,17 @@ class DBApp:
         commit_logs = get_commit_log(self.tm.conn)
         for log in commit_logs:
             self.commit_log_tree.insert("", "end", values=log)
-            
+
+def populate_initial_data(conn):
+    initial_data = {
+        "A": 100,
+        "B": 200,
+        "C": 300
+    }
+    cursor = conn.cursor()
+    for key, value in initial_data.items():
+        cursor.execute('REPLACE INTO data (key, value) VALUES (?, ?)', (key, value))
+    conn.commit()
 
 def main():
     conn = init_db()
@@ -243,5 +279,4 @@ if __name__ == "__main__":
     main()
 
 
-    
 
