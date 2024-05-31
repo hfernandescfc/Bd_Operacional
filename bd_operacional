@@ -56,6 +56,12 @@ def log_commit(conn, transaction_id):
     cursor.execute('INSERT INTO commit_log (transaction_id) VALUES (?)', (transaction_id,))
     conn.commit()
 
+def log_abort(conn, transaction_id):
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO abort_log (transaction_id) VALUES (?)', (transaction_id,))
+    conn.commit()
+
+
 def get_log(conn):
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM log')
@@ -136,11 +142,11 @@ class TransactionManager:
     def abort(self):
         self.cache = {}
         transaction_id = self.current_transaction
-        self.current_transaction = None
-        self.clear_log(transaction_id)  # clear log entries for this transaction
-        cursor = self.conn.cursor()
-        cursor.execute('INSERT INTO abort_log (transaction_id) VALUES (?)', (transaction_id,))
-        self.conn.commit()
+        log_abort(self.conn, transaction_id)
+        self.clear_log(transaction_id)  # Limpar entradas do log para esta transação
+        self.current_transaction = None  # Definir self.current_transaction como None após a conclusão das operações
+
+
 
     def checkpoint(self):
         cursor = self.conn.cursor()
@@ -196,7 +202,7 @@ class DBApp:
         self.commit_button.pack(side=tk.LEFT)
         self.abort_button = tk.Button(self.button_frame, text="Abort", command=self.abort, bg='#F44336', fg='white', font=('bold', 10))
         self.abort_button.pack(side=tk.LEFT)
-        self.recover_button = tk.Button(self.button_frame, text="Recover", command=self.recover, bg='#2196F3', fg='white', font=('bold', 10))
+        self.recover_button = tk.Button(self.button_frame, text="Simular Falha", command=self.recover, bg='#2196F3', fg='white', font=('bold', 10))
         self.recover_button.pack(side=tk.LEFT)
         self.checkpoint_button = tk.Button(self.button_frame, text="Checkpoint", command=self.checkpoint, bg='#FF9800', fg='white', font=('bold', 10))
         self.checkpoint_button.pack(side=tk.LEFT)
@@ -301,8 +307,10 @@ class DBApp:
         self.tm.abort()
         messagebox.showinfo("Abort", f"Transaction {self.transaction_id} aborted")
         self.update_logs()
+        self.update_abort_log()
 
     def recover(self):
+        messagebox.showinfo("Falha", "Falha detectada, iniciando mecanismo de recuperação")
         cursor = self.tm.conn.cursor()
         cursor.execute('SELECT transaction_id FROM commit_log')
         committed_transactions = {row[0] for row in cursor.fetchall()}
@@ -314,6 +322,7 @@ class DBApp:
                 set_value(self.tm.conn, key, value)
         self.tm.clear_log(None)  # clear the log after recovery
         self.recovery_log.insert(tk.END, "Recovery complete\n")
+        messagebox.showinfo("Recovery", "Recovery complete")
 
     def checkpoint(self):
         self.tm.checkpoint()
