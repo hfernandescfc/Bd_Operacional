@@ -161,7 +161,7 @@ class DBApp:
         # Operation buttons
         self.button_frame = tk.Frame(root)
         self.button_frame.pack(side=tk.TOP, fill=tk.X)
-        self.start_button = tk.Button(self.button_frame, text="Start Transaction", command=self.start_transaction, bg='#4CAF50', fg='black', font=('bold', 10))
+        self.start_button = tk.Button(self.button_frame, text="Start Transaction", command=self.start_transaction, bg='#4CAF50', fg='white', font=('bold', 10))
         self.start_button.pack(side=tk.LEFT)
         self.read_button = tk.Button(self.button_frame, text="Read", command=self.read, bg='#F7DC6F', fg='black', font=('bold', 10))
         self.read_button.pack(side=tk.LEFT)
@@ -169,14 +169,14 @@ class DBApp:
         self.write_button.pack(side=tk.LEFT)
         self.commit_button = tk.Button(self.button_frame, text="Commit", command=self.commit, bg='#F7DC6F', fg='black', font=('bold', 10))
         self.commit_button.pack(side=tk.LEFT)
-        self.abort_button = tk.Button(self.button_frame, text="Abort", command=self.abort, bg='#F44336', fg='black', font=('bold', 10))
+        self.abort_button = tk.Button(self.button_frame, text="Abort", command=self.abort, bg='#F44336', fg='white', font=('bold', 10))
         self.abort_button.pack(side=tk.LEFT)
-        self.recover_button = tk.Button(self.button_frame, text="Recover", command=self.recover, bg='#2196F3', fg='black', font=('bold', 10))
+        self.recover_button = tk.Button(self.button_frame, text="Recover", command=self.recover, bg='#2196F3', fg='white', font=('bold', 10))
         self.recover_button.pack(side=tk.LEFT)
-        self.checkpoint_button = tk.Button(self.button_frame, text="Checkpoint", command=self.checkpoint, bg='#FF9800', fg='black', font=('bold', 10))
+        self.checkpoint_button = tk.Button(self.button_frame, text="Checkpoint", command=self.checkpoint, bg='#FF9800', fg='white', font=('bold', 10))
         self.checkpoint_button.pack(side=tk.LEFT)
 
-        # Center: Current Cache and Abort Log
+        # Center: Current Cache, Abort Log, and Recovery Log
         self.center_frame = tk.Frame(root)
         self.center_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.cache_frame = tk.LabelFrame(self.center_frame, text="Current Cache")
@@ -188,6 +188,10 @@ class DBApp:
         self.abort_log_tree = ttk.Treeview(self.abort_log_frame, columns=("transaction_id",), show='headings')
         self.abort_log_tree.heading("transaction_id", text="Transaction ID")
         self.abort_log_tree.pack(fill=tk.Y)
+        self.recovery_log_frame = tk.LabelFrame(self.center_frame, text="Recovery Log")
+        self.recovery_log_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.recovery_log = tk.Text(self.recovery_log_frame, height=10, width=40)
+        self.recovery_log.pack(fill=tk.BOTH, expand=True)
 
         # Right: Log and Commit Log
         self.log_frame = tk.LabelFrame(root, text="Logs")
@@ -203,6 +207,7 @@ class DBApp:
         self.commit_log_tree = ttk.Treeview(self.commit_log_frame, columns=("transaction_id",), show='headings')
         self.commit_log_tree.heading("transaction_id", text="Transaction ID")
         self.commit_log_tree.pack(fill=tk.BOTH, expand=True)
+
 
         self.update_abort_log()
         self.update_logs()
@@ -267,9 +272,17 @@ class DBApp:
         self.update_logs()
 
     def recover(self):
-        self.tm.recover()
-        messagebox.showinfo("Recover", "Recovery completed")
-        self.update_logs()
+        cursor = self.tm.conn.cursor()
+        cursor.execute('SELECT transaction_id FROM commit_log')
+        committed_transactions = {row[0] for row in cursor.fetchall()}
+        self.recovery_log.insert(tk.END, f"Committed transactions: {committed_transactions}\n")
+        cursor.execute('SELECT transaction_id, operation, key, value FROM log')
+        for transaction_id, operation, key, value in cursor.fetchall():
+            if transaction_id in committed_transactions and operation == 'write':
+                self.recovery_log.insert(tk.END, f"Redoing write operation: transaction_id={transaction_id}, key={key}, value={value}\n")
+                set_value(self.tm.conn, key, value)
+        self.tm.clear_log(None)  # clear the log after recovery
+        self.recovery_log.insert(tk.END, "Recovery complete\n")
 
     def checkpoint(self):
         messagebox.showinfo("Checkpoint", "Checkpoint created")
