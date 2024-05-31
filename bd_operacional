@@ -115,7 +115,23 @@ class TransactionManager:
         self.cache = {}
         transaction_id = self.current_transaction
         self.current_transaction = None
-        self.clear_log(transaction_id)  # clear log entries for this transaction
+
+        # Clear log entries for previous transactions that were affected by this transaction
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            DELETE FROM log
+            WHERE transaction_id IN (
+                SELECT l.transaction_id
+                FROM log l
+                JOIN (
+                    SELECT key, MAX(transaction_id) AS max_transaction_id
+                    FROM log
+                    WHERE operation = 'write'
+                    GROUP BY key
+                ) m ON l.key = m.key AND l.transaction_id < m.max_transaction_id
+            )
+        ''')
+        self.conn.commit()
 
     def abort(self):
         self.cache = {}
@@ -126,6 +142,13 @@ class TransactionManager:
         cursor.execute('INSERT INTO abort_log (transaction_id) VALUES (?)', (transaction_id,))
         self.conn.commit()
 
+    def checkpoint(self):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT transaction_id FROM commit_log')
+        committed_transactions = [row[0] for row in cursor.fetchall()]
+        cursor.execute('DELETE FROM log WHERE transaction_id IN (%s)' % ','.join(map(str, committed_transactions)))
+        self.conn.commit()
+
     def recover(self):
         cursor = self.conn.cursor()
         cursor.execute('SELECT transaction_id FROM commit_log')
@@ -134,7 +157,7 @@ class TransactionManager:
         for transaction_id, operation, key, value in cursor.fetchall():
             if transaction_id in committed_transactions and operation == 'write':
                 set_value(self.conn, key, value)
-        self.clear_log(None)  # clear the log after recovery
+ #       self.clear_log(None)  # clear the log after recovery
 
 
 class DBApp:
@@ -158,6 +181,8 @@ class DBApp:
         self.value_entry = tk.Entry(self.top_frame)
         self.value_entry.pack(side=tk.LEFT)
 
+
+
         # Operation buttons
         self.button_frame = tk.Frame(root)
         self.button_frame.pack(side=tk.TOP, fill=tk.X)
@@ -175,6 +200,8 @@ class DBApp:
         self.recover_button.pack(side=tk.LEFT)
         self.checkpoint_button = tk.Button(self.button_frame, text="Checkpoint", command=self.checkpoint, bg='#FF9800', fg='white', font=('bold', 10))
         self.checkpoint_button.pack(side=tk.LEFT)
+        self.restart_button = tk.Button(self.button_frame, text="Restart", command=self.restart, bg='black', fg='white', font=('bold', 10))
+        self.restart_button.pack(side=tk.LEFT)
 
         # Center: Current Cache, Abort Log, and Recovery Log
         self.center_frame = tk.Frame(root)
@@ -192,6 +219,10 @@ class DBApp:
         self.recovery_log_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.recovery_log = tk.Text(self.recovery_log_frame, height=10, width=40)
         self.recovery_log.pack(fill=tk.BOTH, expand=True)
+        self.checkpoint_frame = tk.LabelFrame(self.center_frame, text="Checkpoint")
+        self.checkpoint_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.checkpoint_text = tk.Text(self.checkpoint_frame, height=10, width=40)
+        self.checkpoint_text.pack(fill=tk.BOTH, expand=True)
 
         # Right: Log and Commit Log
         self.log_frame = tk.LabelFrame(root, text="Logs")
@@ -211,7 +242,7 @@ class DBApp:
 
         self.update_abort_log()
         self.update_logs()
-                
+
 
     def get_transaction_ids(self):
         cursor = self.tm.conn.cursor()
@@ -285,9 +316,24 @@ class DBApp:
         self.recovery_log.insert(tk.END, "Recovery complete\n")
 
     def checkpoint(self):
+        self.tm.checkpoint()
+        cursor = self.tm.conn.cursor()
+        cursor.execute('SELECT * FROM data')
+        consistent_state = '\n'.join(f'{key}: {value}' for key, value in cursor.fetchall())
+        self.checkpoint_text.delete(1.0, tk.END)
+        self.checkpoint_text.insert(tk.END, consistent_state)
         messagebox.showinfo("Checkpoint", "Checkpoint created")
-        # For simplicity, checkpoint functionality is not implemented
-        # You can add checkpoint logic if needed
+
+    def restart(self):
+        self.tm.conn.execute('DELETE FROM data')
+        self.tm.conn.execute('DELETE FROM log')
+        self.tm.conn.execute('DELETE FROM commit_log')
+        self.tm.conn.execute('DELETE FROM abort_log')
+        self.tm.conn.commit()
+        self.update_cache_display()
+        self.update_logs()
+        self.checkpoint_text.delete(1.0, tk.END)
+        messagebox.showinfo("Restart", "Database restarted")
 
     def update_logs(self):
         for item in self.log_tree.get_children():
