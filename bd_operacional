@@ -32,6 +32,11 @@ def init_db():
             transaction_id INTEGER PRIMARY KEY
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS active_transactions (
+            transaction_id INTEGER PRIMARY KEY
+        )
+    ''')
     conn.commit()
     return conn
 
@@ -72,6 +77,17 @@ def get_commit_log(conn):
     cursor.execute('SELECT * FROM commit_log')
     return cursor.fetchall()
 
+def log_active_transaction(conn, transaction_id):
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO active_transactions (transaction_id) VALUES (?)', (transaction_id,))
+    conn.commit()
+
+def remove_active_transaction(conn, transaction_id):
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM active_transactions WHERE transaction_id = ?', (transaction_id,))
+    conn.commit()
+
+
 
 def populate_initial_data(conn):
     initial_data = {
@@ -98,6 +114,7 @@ class TransactionManager:
     def start_transaction(self, transaction_id):
         self.current_transaction = transaction_id
         self.cache = {}
+        log_active_transaction(self.conn, transaction_id)
 
     def read(self, key):
         if key in self.cache:
@@ -118,6 +135,7 @@ class TransactionManager:
         for key, value in self.cache.items():
             set_value(self.conn, key, value)
         log_commit(self.conn, self.current_transaction)
+        remove_active_transaction(self.conn, self.current_transaction)
         self.cache = {}
         transaction_id = self.current_transaction
         self.current_transaction = None
@@ -143,6 +161,7 @@ class TransactionManager:
         self.cache = {}
         transaction_id = self.current_transaction
         log_abort(self.conn, transaction_id)
+        remove_active_transaction(self.conn, self.current_transaction)
         self.clear_log(transaction_id)  # Limpar entradas do log para esta transação
         self.current_transaction = None  # Definir self.current_transaction como None após a conclusão das operações
 
@@ -163,7 +182,7 @@ class TransactionManager:
         for transaction_id, operation, key, value in cursor.fetchall():
             if transaction_id in committed_transactions and operation == 'write':
                 set_value(self.conn, key, value)
- #       self.clear_log(None)  # clear the log after recovery
+        remove_active_transaction(self.conn, self.current_transaction)
 
 
 class DBApp:
@@ -214,8 +233,13 @@ class DBApp:
         self.center_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.cache_frame = tk.LabelFrame(self.center_frame, text="Current Cache")
         self.cache_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.cache_text = tk.Text(self.cache_frame, height=10, width=40)
+        self.cache_text = tk.Text(self.cache_frame, height=10, width=20)
         self.cache_text.pack(fill=tk.BOTH, expand=True)
+        self.active_transactions_frame = tk.LabelFrame(self.center_frame, text="Active Transactions")
+        self.active_transactions_frame.pack(side=tk.LEFT, fill=tk.Y)
+        self.active_transactions_tree = ttk.Treeview(self.active_transactions_frame, columns=("transaction_id",), show='headings')
+        self.active_transactions_tree.heading("transaction_id", text="Transaction ID")
+        self.active_transactions_tree.pack(fill=tk.Y)
         self.abort_log_frame = tk.LabelFrame(self.center_frame, text="Abort Log")
         self.abort_log_frame.pack(side=tk.LEFT, fill=tk.Y)
         self.abort_log_tree = ttk.Treeview(self.abort_log_frame, columns=("transaction_id",), show='headings')
@@ -223,11 +247,11 @@ class DBApp:
         self.abort_log_tree.pack(fill=tk.Y)
         self.recovery_log_frame = tk.LabelFrame(self.center_frame, text="Recovery Log")
         self.recovery_log_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.recovery_log = tk.Text(self.recovery_log_frame, height=10, width=40)
+        self.recovery_log = tk.Text(self.recovery_log_frame, height=10, width=30)
         self.recovery_log.pack(fill=tk.BOTH, expand=True)
         self.checkpoint_frame = tk.LabelFrame(self.center_frame, text="Checkpoint")
         self.checkpoint_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.checkpoint_text = tk.Text(self.checkpoint_frame, height=10, width=40)
+        self.checkpoint_text = tk.Text(self.checkpoint_frame, height=10, width=30)
         self.checkpoint_text.pack(fill=tk.BOTH, expand=True)
 
         # Right: Log and Commit Log
@@ -248,6 +272,7 @@ class DBApp:
 
         self.update_abort_log()
         self.update_logs()
+        self.update_active_transactions()
 
 
     def get_transaction_ids(self):
@@ -280,6 +305,7 @@ class DBApp:
         self.update_cache_display()
         messagebox.showinfo("Transaction", f"Transaction {self.transaction_id} started")
         self.update_transaction_ids()
+        self.update_active_transactions()
 
     def read(self):
         key = self.key_entry.get()
@@ -302,12 +328,15 @@ class DBApp:
         messagebox.showinfo("Commit", f"Transaction {self.transaction_id} committed")
         self.update_logs()
         self.update_cache_display()
+        self.update_active_transactions()
 
     def abort(self):
         self.tm.abort()
         messagebox.showinfo("Abort", f"Transaction {self.transaction_id} aborted")
         self.update_logs()
         self.update_abort_log()
+        self.update_cache_display()
+        self.update_active_transactions()
 
     def recover(self):
         messagebox.showinfo("Falha", "Falha detectada, iniciando mecanismo de recuperação")
@@ -324,6 +353,8 @@ class DBApp:
         self.recovery_log.insert(tk.END, "Recovery complete\n")
         self.update_logs()
         self.update_abort_log()
+        self.update_cache_display()
+        self.update_active_transactions()
         messagebox.showinfo("Recovery", "Recovery complete")
 
     def checkpoint(self):
@@ -340,9 +371,14 @@ class DBApp:
         self.tm.conn.execute('DELETE FROM log')
         self.tm.conn.execute('DELETE FROM commit_log')
         self.tm.conn.execute('DELETE FROM abort_log')
+        self.tm.conn.execute('DELETE FROM active_transactions')
         self.tm.conn.commit()
         self.update_cache_display()
         self.update_logs()
+        self.update_abort_log()
+        self.update_active_transactions()
+        populate_initial_data(self.tm.conn)
+        self.recovery_log.delete('1.0', tk.END)  # Limpa o recovery log
         self.checkpoint_text.delete(1.0, tk.END)
         messagebox.showinfo("Restart", "Database restarted")
 
@@ -366,6 +402,14 @@ class DBApp:
         cursor.execute('SELECT * FROM abort_log')
         for row in cursor.fetchall():
             self.abort_log_tree.insert("", "end", values=row)
+
+    def update_active_transactions(self):
+        for i in self.active_transactions_tree.get_children():
+            self.active_transactions_tree.delete(i)
+        cursor = self.tm.conn.cursor()
+        cursor.execute('SELECT * FROM active_transactions')
+        for row in cursor.fetchall():
+            self.active_transactions_tree.insert("", tk.END, values=row)
 
 def main():
     conn = init_db()
