@@ -322,6 +322,8 @@ class DBApp:
                 set_value(self.tm.conn, key, value)
         self.tm.clear_log(None)  # clear the log after recovery
         self.recovery_log.insert(tk.END, "Recovery complete\n")
+        self.update_logs()
+        self.update_abort_log()
         messagebox.showinfo("Recovery", "Recovery complete")
 
     def checkpoint(self):
